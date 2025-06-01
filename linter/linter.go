@@ -20,7 +20,7 @@ func (e LintError) String() string {
 	return fmt.Sprintf("[%s] Line %d: %s", e.RuleName, e.Line, e.Message)
 }
 
-// Rule defines the interface that all linting rules must implement.
+// Rule defines the interface that all line-by-line linting rules must implement.
 type Rule interface {
 	// Name returns the unique name of the linting rule.
 	Name() string
@@ -30,7 +30,18 @@ type Rule interface {
 	LintLine(line string, lineNumber int) []LintError
 
 	// Finalize is called after all lines in the file have been processed.
-	// It's used for rules that need to perform checks on the entire file content,
-	// or require aggregated information. Returns any LintErrors found globally.
-	Finalize() []LintError
+	// It's used for rules that need to perform checks that don't depend on raw file bytes.
+	// Returns any LintErrors found globally by the rule.
+	Finalize(filePath string) []LintError // Now takes filePath
+}
+
+// FileAccessRule is an optional interface for rules that need to read the raw file bytes
+// (e.g., to check for mixed line endings or EOF newline).
+// A rule can implement both Rule and FileAccessRule if it has both line-based and file-based checks.
+type FileAccessRule interface {
+	Rule // Embeds the base Rule interface
+
+	// Finalize is overridden to specifically indicate that this rule might
+	// need to re-read the file, and thus the filePath is guaranteed to be provided.
+	Finalize(filePath string) []LintError // Explicitly takes filePath
 }

@@ -50,7 +50,7 @@ func (r *SuperLongSentenceRule) LintLine(line string, lineNumber int) []linter.L
 	return errors
 }
 
-// Finalize does nothing for this rule as it's line-by-line.
-func (r *SuperLongSentenceRule) Finalize() []linter.LintError {
+// Finalize does nothing for this rule as it's purely line-by-line.
+func (r *SuperLongSentenceRule) Finalize(filePath string) []linter.LintError {
 	return nil
 }

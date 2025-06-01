@@ -41,7 +41,7 @@ func (r *TrailingSpacesRule) LintLine(line string, lineNumber int) []linter.Lint
 	return errors
 }
 
-// Finalize does nothing for this rule as it's line-by-line.
-func (r *TrailingSpacesRule) Finalize() []linter.LintError {
+// Finalize does nothing for this rule as it's purely line-by-line.
+func (r *TrailingSpacesRule) Finalize(filePath string) []linter.LintError {
 	return nil
 }

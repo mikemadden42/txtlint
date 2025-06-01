@@ -57,7 +57,7 @@ func (r *MissingPunctuationRule) LintLine(line string, lineNumber int) []linter.
 	return errors
 }
 
-// Finalize does nothing for this rule as it's line-by-line.
-func (r *MissingPunctuationRule) Finalize() []linter.LintError {
+// Finalize does nothing for this rule as it's purely line-by-line.
+func (r *MissingPunctuationRule) Finalize(filePath string) []linter.LintError {
 	return nil
 }
