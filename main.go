@@ -1,91 +1,127 @@
+// Command txtlint checks plain-text files for common formatting and style
+// problems.
 package main
 
 import (
-	"bufio"
+	"errors"
+	"flag"
 	"fmt"
-	"io" // Import for io.EOF
+	"io"
 	"os"
+	"slices"
+	"strings"
 
 	"github.com/mikemadden42/txtlint/linter"
 	"github.com/mikemadden42/txtlint/rules"
 )
 
+// Exit codes.
+const (
+	exitOK     = 0 // no errors found
+	exitIssues = 1 // lint errors found (or warnings, with -strict)
+	exitFailed = 2 // bad usage, or a file could not be read
+)
+
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: txtlint <file.txt>")
-		os.Exit(1)
+	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+}
+
+// run executes txtlint with the given arguments and returns the exit code.
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("txtlint", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	maxLength := fs.Int("max-sentence-length", 120, "maximum sentence length, in characters, for SuperLongSentence")
+	disable := fs.String("disable", "", "comma-separated list of rules to disable")
+	strict := fs.Bool("strict", false, "exit with status 1 on warnings as well as errors")
+	listRules := fs.Bool("list-rules", false, "list the available rules and exit")
+	fs.Usage = func() {
+		fmt.Fprint(stderr, "Usage: txtlint [flags] [file ...]\n\n"+
+			"Lints each file, or standard input if no file (or \"-\") is given.\n\nFlags:\n")
+		fs.PrintDefaults()
 	}
 
-	filePath := os.Args[1]
-	file, err := os.Open(filePath)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return exitOK
+		}
+		return exitFailed
+	}
+	if *maxLength < 1 {
+		fmt.Fprintln(stderr, "txtlint: -max-sentence-length must be at least 1")
+		return exitFailed
+	}
+
+	all := rules.All(*maxLength)
+	if *listRules {
+		for _, rule := range all {
+			fmt.Fprintf(stdout, "%-24s %s\n", rule.Name(), rule.Description())
+		}
+		return exitOK
+	}
+	enabled, err := enabledRules(all, *disable)
 	if err != nil {
-		fmt.Printf("Error opening file %s: %v\n", filePath, err)
-		os.Exit(1)
-	}
-	defer file.Close() // Ensure the file is closed when main exits
-
-	// Initialize your rules.
-	// In a real application, you might read these from a config file
-	// or command-line flags to enable/disable specific rules.
-	lintRules := []linter.Rule{
-		rules.NewTrailingSpacesRule(),
-		rules.NewSuperLongSentenceRule(120), // Example: Configure max length
-		rules.NewMissingPunctuationRule(),
-		rules.NewNoConsecutiveBlankLinesRule(), // New rule!
-		rules.NewNoMixedLineEndingsRule(),      // New rule!
-		rules.NewEOFNewlineRule(),              // New rule!
-		// Add instances of other rules here as you create them
+		fmt.Fprintf(stderr, "txtlint: %v\n", err)
+		return exitFailed
 	}
 
-	var allErrors []linter.LintError
-	scanner := bufio.NewScanner(file)
-	lineNumber := 0
+	paths := fs.Args()
+	if len(paths) == 0 {
+		paths = []string{"-"}
+	}
 
-	for scanner.Scan() {
-		lineNumber++
-		line := scanner.Text() // scanner.Text() strips the newline characters
-
-		// Store raw line (including original newline if present) if needed by Finalize() rules
-		// To get the raw line *including* the newline, we need to manually read or adapt.
-		// For simplicity, let's assume scanner.Bytes() works, or handle it as a specific rule's concern.
-		// For NoMixedLineEndingsRule, we need to read the raw bytes.
-		// Let's modify the loop to provide raw line data.
-		// For simplicity in this main.go, we'll let NoMixedLineEndingsRule handle its own file reading.
-		// The `Finalize` method will likely need to re-read the file in its own way if it needs raw byte content.
-
-		for _, rule := range lintRules {
-			allErrors = append(allErrors, rule.LintLine(line, lineNumber)...)
+	code := exitOK
+	for _, path := range paths {
+		content, err := readInput(path, stdin)
+		if err != nil {
+			fmt.Fprintf(stderr, "txtlint: %v\n", err)
+			code = exitFailed
+			continue
+		}
+		name := path
+		if path == "-" {
+			name = "<stdin>"
+		}
+		for _, issue := range linter.Lint(content, enabled) {
+			fmt.Fprintln(stdout, issue.Format(name))
+			if code == exitOK && (issue.Severity == linter.Error || *strict) {
+				code = exitIssues
+			}
 		}
 	}
+	return code
+}
 
-	if err := scanner.Err(); err != nil {
-		// bufio.Scanner only returns io.EOF if the last token is empty and
-		// the reader returns io.EOF. For our purposes, other errors are more critical.
-		if err != io.EOF {
-			fmt.Printf("Error reading file %s: %v\n", filePath, err)
-			os.Exit(1)
+// enabledRules returns all rules except those named in disable, a
+// comma-separated, case-insensitive list.
+func enabledRules(all []linter.Rule, disable string) ([]linter.Rule, error) {
+	disabled := map[string]bool{}
+	for _, name := range strings.Split(disable, ",") {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
 		}
+		known := slices.ContainsFunc(all, func(r linter.Rule) bool {
+			return strings.EqualFold(r.Name(), name)
+		})
+		if !known {
+			return nil, fmt.Errorf("unknown rule %q (see -list-rules)", name)
+		}
+		disabled[strings.ToLower(name)] = true
 	}
 
-	// After processing all lines, call Finalize for rules that need it.
-	// Pass the file path to Finalize if rules need to re-read the file raw.
-	for _, rule := range lintRules {
-		if ruleWithFileAccess, ok := rule.(linter.FileAccessRule); ok {
-			allErrors = append(allErrors, ruleWithFileAccess.Finalize(filePath)...)
-		} else {
-			allErrors = append(allErrors, rule.Finalize("")...) // Pass empty string if file path isn't needed
+	var enabled []linter.Rule
+	for _, rule := range all {
+		if !disabled[strings.ToLower(rule.Name())] {
+			enabled = append(enabled, rule)
 		}
 	}
+	return enabled, nil
+}
 
-	// Report results
-	if len(allErrors) > 0 {
-		fmt.Printf("\nLinting results for %s:\n", filePath)
-		for _, err := range allErrors {
-			fmt.Println(err)
-		}
-		os.Exit(1) // Exit with non-zero status to indicate errors for scripting
-	} else {
-		fmt.Printf("No linting issues found in %s.\n", filePath)
-		os.Exit(0) // Exit with zero status for success
+// readInput reads the named file, or stdin when path is "-".
+func readInput(path string, stdin io.Reader) ([]byte, error) {
+	if path == "-" {
+		return io.ReadAll(stdin)
 	}
+	return os.ReadFile(path) //nolint:gosec // G304: reading user-specified files is the tool's purpose.
 }

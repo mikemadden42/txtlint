@@ -1,19 +1,25 @@
 package rules
 
 import (
-	"bytes"
-	"io/ioutil"
+	"fmt"
+	"strings"
 
 	"github.com/mikemadden42/txtlint/linter"
 )
 
-// NoMixedLineEndingsRule implements linter.FileAccessRule to check for consistent line endings.
-type NoMixedLineEndingsRule struct {
-	// No state needed during line-by-line scan, check happens in Finalize
+// lineEndings lists the recognized line endings in reporting order.
+var lineEndings = []struct{ seq, name string }{
+	{"\n", "LF"},
+	{"\r\n", "CRLF"},
+	{"\r", "CR"},
 }
 
+// NoMixedLineEndingsRule reports files that mix LF, CRLF and CR line endings,
+// and files that use classic Mac (CR) line endings at all.
+type NoMixedLineEndingsRule struct{}
+
 // NewNoMixedLineEndingsRule creates a new instance of NoMixedLineEndingsRule.
-func NewNoMixedLineEndingsRule() linter.FileAccessRule { // Returns FileAccessRule
+func NewNoMixedLineEndingsRule() linter.Rule {
 	return &NoMixedLineEndingsRule{}
 }
 
@@ -22,48 +28,70 @@ func (r *NoMixedLineEndingsRule) Name() string {
 	return "NoMixedLineEndings"
 }
 
-// LintLine does nothing for this rule, as line endings are checked in Finalize.
-func (r *NoMixedLineEndingsRule) LintLine(line string, lineNumber int) []linter.LintError {
-	return nil
+// Description returns a one-line summary of the rule.
+func (r *NoMixedLineEndingsRule) Description() string {
+	return "All lines must use the same line ending, either LF or CRLF."
 }
 
-// Finalize checks the entire file for mixed line endings.
-func (r *NoMixedLineEndingsRule) Finalize(filePath string) []linter.LintError {
-	if filePath == "" {
-		return nil // Should not happen if main.go passes it correctly for FileAccessRule
+// Check reports the first CR line ending, and, if endings are mixed, the first
+// line that differs from the most common ending.
+func (r *NoMixedLineEndingsRule) Check(doc *linter.Document) []linter.Issue {
+	counts := map[string]int{}
+	first := map[string]int{} // first line number using each ending
+	for _, line := range doc.Lines {
+		if line.Ending == "" {
+			continue
+		}
+		if counts[line.Ending] == 0 {
+			first[line.Ending] = line.Number
+		}
+		counts[line.Ending]++
 	}
 
-	content, err := ioutil.ReadFile(filePath)
-	if err != nil {
-		return []linter.LintError{{
-			RuleName: r.Name(),
-			Line:     0, // File-level error
-			Message:  "Failed to read file for line ending check: " + err.Error(),
-		}}
-	}
-
-	hasLF := bytes.ContainsRune(content, '\n')
-	hasCRLF := bytes.Contains(content, []byte{'\r', '\n'})
-	hasCR := bytes.ContainsRune(content, '\r') && !hasCRLF // Check for old Mac style CR
-
-	var errors []linter.LintError
-
-	// If both LF and CRLF are present, it's mixed
-	if hasLF && hasCRLF {
-		errors = append(errors, linter.LintError{
-			RuleName: r.Name(),
-			Line:     0, // File-level error
-			Message:  "Mixed line endings (LF and CRLF) detected in file",
+	var issues []linter.Issue
+	if counts["\r"] > 0 {
+		issues = append(issues, linter.Issue{
+			Rule:     r.Name(),
+			Severity: linter.Error,
+			Line:     first["\r"],
+			Message:  "Carriage return (CR) line ending (classic Mac format)",
 		})
 	}
-	// If CR is present (and not part of CRLF), it's also a mixed or non-standard ending
-	if hasCR {
-		errors = append(errors, linter.LintError{
-			RuleName: r.Name(),
-			Line:     0, // File-level error
-			Message:  "Carriage Return (CR) line endings detected (old Mac format)",
-		})
+	if len(counts) < 2 {
+		return issues
 	}
 
-	return errors
+	// The more common of LF and CRLF is the expected ending (CR is already
+	// reported above, so it is never expected); ties go to whichever appears
+	// first. Report the first line that uses any other ending.
+	dominant := ""
+	for _, e := range lineEndings {
+		if e.seq == "\r" {
+			continue
+		}
+		c := counts[e.seq]
+		if c > counts[dominant] || (c > 0 && c == counts[dominant] && first[e.seq] < first[dominant]) {
+			dominant = e.seq
+		}
+	}
+	var summary []string
+	deviation, expected := 0, ""
+	for _, e := range lineEndings {
+		if counts[e.seq] == 0 {
+			continue
+		}
+		summary = append(summary, fmt.Sprintf("%d %s", counts[e.seq], e.name))
+		if e.seq == dominant {
+			expected = e.name
+		} else if deviation == 0 || first[e.seq] < deviation {
+			deviation = first[e.seq]
+		}
+	}
+	issues = append(issues, linter.Issue{
+		Rule:     r.Name(),
+		Severity: linter.Error,
+		Line:     deviation,
+		Message:  fmt.Sprintf("Mixed line endings: %s (expected %s)", strings.Join(summary, ", "), expected),
+	})
+	return issues
 }
