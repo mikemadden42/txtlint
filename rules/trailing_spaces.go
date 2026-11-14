@@ -1,12 +1,14 @@
 package rules
 
 import (
+	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mikemadden42/txtlint/linter"
 )
 
-// TrailingSpacesRule implements the linter.Rule interface to check for trailing whitespace.
+// TrailingSpacesRule reports lines that end with whitespace.
 type TrailingSpacesRule struct{}
 
 // NewTrailingSpacesRule creates a new instance of TrailingSpacesRule.
@@ -19,29 +21,27 @@ func (r *TrailingSpacesRule) Name() string {
 	return "TrailingSpaces"
 }
 
-// LintLine checks for trailing whitespace on the given line.
-func (r *TrailingSpacesRule) LintLine(line string, lineNumber int) []linter.LintError {
-	var errors []linter.LintError
-	if len(line) > 0 && unicode.IsSpace(rune(line[len(line)-1])) {
-		// Find the column where trailing spaces begin
-		firstTrailingSpaceCol := len(line)
-		for i := len(line) - 1; i >= 0; i-- {
-			if !unicode.IsSpace(rune(line[i])) {
-				break
-			}
-			firstTrailingSpaceCol = i + 1 // +1 for 1-based column number
+// Description returns a one-line summary of the rule.
+func (r *TrailingSpacesRule) Description() string {
+	return "Lines must not end with whitespace."
+}
+
+// Check reports each line with trailing whitespace, pointing at the first
+// trailing whitespace character.
+func (r *TrailingSpacesRule) Check(doc *linter.Document) []linter.Issue {
+	var issues []linter.Issue
+	for _, line := range doc.Lines {
+		trimmed := strings.TrimRightFunc(line.Text, unicode.IsSpace)
+		if len(trimmed) == len(line.Text) {
+			continue
 		}
-		errors = append(errors, linter.LintError{
-			RuleName: r.Name(),
-			Line:     lineNumber,
-			Column:   firstTrailingSpaceCol,
+		issues = append(issues, linter.Issue{
+			Rule:     r.Name(),
+			Severity: linter.Error,
+			Line:     line.Number,
+			Column:   utf8.RuneCountInString(trimmed) + 1,
 			Message:  "Line has trailing whitespace",
 		})
 	}
-	return errors
-}
-
-// Finalize does nothing for this rule as it's purely line-by-line.
-func (r *TrailingSpacesRule) Finalize(filePath string) []linter.LintError {
-	return nil
+	return issues
 }

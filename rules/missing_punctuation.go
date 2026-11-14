@@ -3,11 +3,14 @@ package rules
 import (
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/mikemadden42/txtlint/linter"
 )
 
-// MissingPunctuationRule implements the linter.Rule interface to check for missing end punctuation.
+// MissingPunctuationRule reports lines that look like sentences but do not
+// end with sentence-ending punctuation. It is a heuristic, so its issues are
+// warnings.
 type MissingPunctuationRule struct{}
 
 // NewMissingPunctuationRule creates a new instance of MissingPunctuationRule.
@@ -20,44 +23,31 @@ func (r *MissingPunctuationRule) Name() string {
 	return "MissingPunctuation"
 }
 
-// LintLine checks for lines that might be missing a sentence-ending punctuation.
-// This is a heuristic and not foolproof.
-func (r *MissingPunctuationRule) LintLine(line string, lineNumber int) []linter.LintError {
-	var errors []linter.LintError
-
-	trimmedLine := strings.TrimSpace(line)
-
-	if len(trimmedLine) == 0 {
-		return errors // Ignore empty lines
-	}
-
-	lastChar := rune(trimmedLine[len(trimmedLine)-1])
-
-	// Define common sentence-ending punctuation
-	isPunctuation := func(r rune) bool {
-		return r == '.' || r == '!' || r == '?'
-	}
-
-	// Check if the line ends with a letter or digit, and not with punctuation.
-	// Also ignore lines that seem to be code, paths, or short fragments.
-	if unicode.IsLetter(lastChar) || unicode.IsDigit(lastChar) {
-		if !isPunctuation(lastChar) {
-			// If the line contains at least one space, it's more likely a sentence.
-			// This helps avoid flagging single words or very short fragments.
-			if strings.ContainsRune(trimmedLine, ' ') {
-				errors = append(errors, linter.LintError{
-					RuleName: r.Name(),
-					Line:     lineNumber,
-					Column:   len(trimmedLine), // Point to the last character
-					Message:  "Line might be missing sentence-ending punctuation (.!?)",
-				})
-			}
-		}
-	}
-	return errors
+// Description returns a one-line summary of the rule.
+func (r *MissingPunctuationRule) Description() string {
+	return "Sentence-like lines should end with . ! or ? (warning)."
 }
 
-// Finalize does nothing for this rule as it's purely line-by-line.
-func (r *MissingPunctuationRule) Finalize(filePath string) []linter.LintError {
-	return nil
+// Check reports lines of more than one word that end in a letter or digit.
+func (r *MissingPunctuationRule) Check(doc *linter.Document) []linter.Issue {
+	var issues []linter.Issue
+	for _, line := range doc.Lines {
+		text := strings.TrimRightFunc(line.Text, unicode.IsSpace)
+		last, _ := utf8.DecodeLastRuneInString(text)
+		if !unicode.IsLetter(last) && !unicode.IsDigit(last) {
+			continue
+		}
+		// Single words are usually headings or list items, not sentences.
+		if !strings.ContainsFunc(strings.TrimSpace(text), unicode.IsSpace) {
+			continue
+		}
+		issues = append(issues, linter.Issue{
+			Rule:     r.Name(),
+			Severity: linter.Warning,
+			Line:     line.Number,
+			Column:   utf8.RuneCountInString(text),
+			Message:  "Line might be missing sentence-ending punctuation (.!?)",
+		})
+	}
+	return issues
 }

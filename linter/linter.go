@@ -1,47 +1,120 @@
+// Package linter defines the types shared by txtlint rules and runs rules
+// against a document.
 package linter
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
+	"strings"
 )
 
-// LintError represents a single linting issue found.
-type LintError struct {
-	RuleName string
-	Line     int
-	Column   int // Optional, but useful for pointing to exact location
+// Severity indicates how serious an issue is.
+type Severity int
+
+const (
+	// Error marks an issue that is definitely a problem.
+	Error Severity = iota
+	// Warning marks a heuristic issue that may be a false positive.
+	Warning
+)
+
+// String returns the lowercase name of the severity.
+func (s Severity) String() string {
+	if s == Warning {
+		return "warning"
+	}
+	return "error"
+}
+
+// Issue is a single problem found by a rule.
+type Issue struct {
+	Rule     string
+	Severity Severity
+	Line     int // 1-based; 0 means the issue applies to the whole file
+	Column   int // 1-based, in runes; 0 means no specific column
 	Message  string
 }
 
-// String returns a formatted string representation of the LintError.
-func (e LintError) String() string {
-	if e.Column > 0 {
-		return fmt.Sprintf("[%s] Line %d, Col %d: %s", e.RuleName, e.Line, e.Column, e.Message)
+// Format renders the issue as "file:line:col: severity: message [Rule]",
+// omitting any position parts that are not set.
+func (i Issue) Format(file string) string {
+	var pos []string
+	if file != "" {
+		pos = append(pos, file)
 	}
-	return fmt.Sprintf("[%s] Line %d: %s", e.RuleName, e.Line, e.Message)
+	if i.Line > 0 {
+		pos = append(pos, fmt.Sprint(i.Line))
+		if i.Column > 0 {
+			pos = append(pos, fmt.Sprint(i.Column))
+		}
+	}
+	prefix := ""
+	if len(pos) > 0 {
+		prefix = strings.Join(pos, ":") + ": "
+	}
+	return fmt.Sprintf("%s%s: %s [%s]", prefix, i.Severity, i.Message, i.Rule)
 }
 
-// Rule defines the interface that all line-by-line linting rules must implement.
+// String renders the issue without a file name.
+func (i Issue) String() string {
+	return i.Format("")
+}
+
+// Line is a single line of a document.
+type Line struct {
+	Number int    // 1-based
+	Text   string // the line without its line ending
+	Ending string // "\n", "\r\n", "\r", or "" for a final line with no terminator
+}
+
+// Document is a text file split into lines.
+type Document struct {
+	Content []byte
+	Lines   []Line
+}
+
+// NewDocument splits content into lines, recognizing LF, CRLF and CR endings.
+// A trailing line ending does not produce an extra empty line.
+func NewDocument(content []byte) *Document {
+	doc := &Document{Content: content}
+	s := string(content)
+	for n := 1; len(s) > 0; n++ {
+		i := strings.IndexAny(s, "\r\n")
+		if i < 0 {
+			doc.Lines = append(doc.Lines, Line{Number: n, Text: s})
+			break
+		}
+		end := i + 1
+		if s[i] == '\r' && end < len(s) && s[end] == '\n' {
+			end++
+		}
+		doc.Lines = append(doc.Lines, Line{Number: n, Text: s[:i], Ending: s[i:end]})
+		s = s[end:]
+	}
+	return doc
+}
+
+// Rule is a single check run against a whole document.
 type Rule interface {
-	// Name returns the unique name of the linting rule.
+	// Name returns the unique name of the rule.
 	Name() string
-
-	// LintLine processes a single line of text and returns any LintErrors found.
-	// The 'line' parameter does NOT include the trailing newline character.
-	LintLine(line string, lineNumber int) []LintError
-
-	// Finalize is called after all lines in the file have been processed.
-	// It's used for rules that need to perform checks that don't depend on raw file bytes.
-	// Returns any LintErrors found globally by the rule.
-	Finalize(filePath string) []LintError // Now takes filePath
+	// Description returns a one-line summary of what the rule checks.
+	Description() string
+	// Check returns the issues the rule finds in doc.
+	Check(doc *Document) []Issue
 }
 
-// FileAccessRule is an optional interface for rules that need to read the raw file bytes
-// (e.g., to check for mixed line endings or EOF newline).
-// A rule can implement both Rule and FileAccessRule if it has both line-based and file-based checks.
-type FileAccessRule interface {
-	Rule // Embeds the base Rule interface
-
-	// Finalize is overridden to specifically indicate that this rule might
-	// need to re-read the file, and thus the filePath is guaranteed to be provided.
-	Finalize(filePath string) []LintError // Explicitly takes filePath
+// Lint runs rules against content and returns their issues ordered by
+// position. File-level issues (line 0) come first.
+func Lint(content []byte, rules []Rule) []Issue {
+	doc := NewDocument(content)
+	var issues []Issue
+	for _, rule := range rules {
+		issues = append(issues, rule.Check(doc)...)
+	}
+	slices.SortStableFunc(issues, func(a, b Issue) int {
+		return cmp.Or(cmp.Compare(a.Line, b.Line), cmp.Compare(a.Column, b.Column))
+	})
+	return issues
 }

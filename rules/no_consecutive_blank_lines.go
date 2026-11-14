@@ -6,11 +6,8 @@ import (
 	"github.com/mikemadden42/txtlint/linter"
 )
 
-// NoConsecutiveBlankLinesRule implements the linter.Rule interface
-// to check for more than one consecutive blank line.
-type NoConsecutiveBlankLinesRule struct {
-	previousLineWasBlank bool
-}
+// NoConsecutiveBlankLinesRule reports runs of more than one blank line.
+type NoConsecutiveBlankLinesRule struct{}
 
 // NewNoConsecutiveBlankLinesRule creates a new instance of NoConsecutiveBlankLinesRule.
 func NewNoConsecutiveBlankLinesRule() linter.Rule {
@@ -22,23 +19,26 @@ func (r *NoConsecutiveBlankLinesRule) Name() string {
 	return "NoConsecutiveBlankLines"
 }
 
-// LintLine checks for consecutive blank lines.
-func (r *NoConsecutiveBlankLinesRule) LintLine(line string, lineNumber int) []linter.LintError {
-	var errors []linter.LintError
-	currentLineIsBlank := (strings.TrimSpace(line) == "")
-
-	if currentLineIsBlank && r.previousLineWasBlank {
-		errors = append(errors, linter.LintError{
-			RuleName: r.Name(),
-			Line:     lineNumber,
-			Message:  "More than one consecutive blank line detected",
-		})
-	}
-	r.previousLineWasBlank = currentLineIsBlank
-	return errors
+// Description returns a one-line summary of the rule.
+func (r *NoConsecutiveBlankLinesRule) Description() string {
+	return "There must not be more than one blank line in a row."
 }
 
-// Finalize does nothing for this rule as its state is reset per file.
-func (r *NoConsecutiveBlankLinesRule) Finalize(filePath string) []linter.LintError {
-	return nil
+// Check reports every blank line that directly follows another blank line.
+func (r *NoConsecutiveBlankLinesRule) Check(doc *linter.Document) []linter.Issue {
+	var issues []linter.Issue
+	previousLineWasBlank := false
+	for _, line := range doc.Lines {
+		blank := strings.TrimSpace(line.Text) == ""
+		if blank && previousLineWasBlank {
+			issues = append(issues, linter.Issue{
+				Rule:     r.Name(),
+				Severity: linter.Error,
+				Line:     line.Number,
+				Message:  "More than one consecutive blank line",
+			})
+		}
+		previousLineWasBlank = blank
+	}
+	return issues
 }
